@@ -152,6 +152,13 @@ Start the environment:
 docker compose up -d
 ```
 
+> Note: The `kali` and `caldera` services are now in the `local-only` profile and are **not started by default**.
+> Start them explicitly only when needed:
+>
+> ```bash
+> docker compose --profile local-only up -d kali caldera
+> ```
+
 Watch logs (optional):
 
 ```bash

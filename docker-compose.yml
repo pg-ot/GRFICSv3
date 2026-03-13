@@ -84,6 +84,7 @@ services:
     image: fortiphyd/grfics-attacker
     container_name: kali
     hostname: kali
+    profiles: ["local-only"]
     build: ./attacker
     cap_add:
       - NET_ADMIN
@@ -127,6 +128,7 @@ services:
     image: fortiphyd/grfics-caldera
     container_name: caldera
     hostname: caldera
+    profiles: ["local-only"]
     build: ./caldera
     restart: unless-stopped
     ports:

@@ -152,6 +152,25 @@ Start the environment:
 docker compose up -d
 ```
 
+### Macvlan parent interface (important for cloud VMs)
+
+GRFICS macvlan networks must bind to your host's real NIC. The default is `eth0`, but many cloud Ubuntu images (including Google Cloud VMs) use `ens4`.
+
+Check your host interface name:
+
+```bash
+ip addr
+```
+
+Set the interface in `.env` before starting:
+
+```bash
+cp .env.example .env
+sed -i 's/^GRFICS_PARENT_IFACE=.*/GRFICS_PARENT_IFACE=ens4/' .env
+docker compose config
+docker compose up -d
+```
+
 Watch logs (optional):
 
 ```bash
@@ -310,4 +329,3 @@ Visit [https://fortiphyd.com](https://fortiphyd.com) to learn more, or [follow u
 
 > **Build. Break. Defend. Learn.**  
 > GRFICSv3 brings industrial cybersecurity to life, no hardware required.
-

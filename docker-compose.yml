@@ -97,6 +97,21 @@ services:
       net.ipv4.conf.default.arp_announce: 2
       net.ipv4.conf.all.arp_announce: 2
 
+  # Simulated Level 4 / enterprise entry point
+  l4-web:
+    image: nginx:alpine
+    container_name: l4-web
+    hostname: l4-web
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+    volumes:
+      - ./l4-web/index.html:/usr/share/nginx/html/index.html:ro
+    networks:
+      a-grfics-admin:
+      d-l4-net:
+        ipv4_address: 192.168.100.10
+
   router:
     image: fortiphyd/grfics-router
     container_name: router
@@ -122,6 +137,8 @@ services:
         ipv4_address: 192.168.95.200
       c-dmz-net:
         ipv4_address: 192.168.90.200
+      d-l4-net:
+        ipv4_address: 192.168.100.200
 
   caldera:
     image: fortiphyd/grfics-caldera
@@ -155,6 +172,15 @@ networks:
         - subnet: 192.168.90.0/24
           gateway: 192.168.90.1
 
+  # Level 4 / enterprise subnet for WAN-side demo access
+  d-l4-net:
+    driver: macvlan
+    driver_opts:
+      parent: eth0  # Replace with your actual host NIC
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+          gateway: 192.168.100.1
 
   a-grfics-admin:
     driver: bridge

@@ -1,7 +1,9 @@
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import requests
 from flask import Flask, jsonify, render_template
@@ -19,6 +21,10 @@ HMI_STATUS_URLS = [
     ).split(",")
     if url.strip()
 ]
+HMI_BASE_URL = os.getenv("HMI_BASE_URL", "http://192.168.90.107:8080").rstrip("/")
+HMI_LOGIN_PATH = os.getenv("HMI_LOGIN_PATH", "/login.htm")
+HMI_USERNAME = os.getenv("HMI_USERNAME", "admin")
+HMI_PASSWORD = os.getenv("HMI_PASSWORD", "admin")
 POLL_INTERVAL_SECONDS = int(os.getenv("HMI_POLL_INTERVAL_SECONDS", "10"))
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HMI_HTTP_TIMEOUT_SECONDS", "3"))
 
@@ -32,6 +38,8 @@ status_cache = {
     "source": "demo-fallback",
 }
 cache_lock = threading.Lock()
+session_lock = threading.Lock()
+hmi_session = requests.Session()
 
 
 def _coerce_float(value, default=0.0):
@@ -61,14 +69,76 @@ def sanitize_status(raw_status):
     }
 
 
+def extract_status_from_text(text):
+    # Best-effort adapter for non-JSON authenticated pages.
+    patterns = {
+        "plant_status": r"(?:plant[_\\s-]*status|status)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
+        "tank_level": r"(?:tank[_\\s-]*level)\\s*[:=]\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?",
+        "pump_state": r"(?:pump[_\\s-]*state)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
+        "valve_state": r"(?:valve[_\\s-]*state)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
+        "alarm_count": r"(?:alarm[_\\s-]*count|alarms?)\\s*[:=]\\s*\"?([0-9]+)\"?",
+    }
+    extracted = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            extracted[key] = match.group(1).strip()
+
+    if not extracted:
+        return None
+    extracted["last_update"] = datetime.now(timezone.utc).isoformat()
+    return sanitize_status(extracted)
+
+
+def _parse_login_form(login_html):
+    action_match = re.search(r'<form[^>]*action=["\\\']?([^"\\\' >]+)', login_html, flags=re.IGNORECASE)
+    action = action_match.group(1) if action_match else HMI_LOGIN_PATH
+    hidden_fields = dict(
+        re.findall(
+            r'<input[^>]*type=["\\\']hidden["\\\'][^>]*name=["\\\']([^"\\\']+)["\\\'][^>]*value=["\\\']([^"\\\']*)["\\\']',
+            login_html,
+            flags=re.IGNORECASE,
+        )
+    )
+    names = re.findall(r'<input[^>]*name=["\\\']([^"\\\']+)["\\\']', login_html, flags=re.IGNORECASE)
+    lower_to_name = {n.lower(): n for n in names}
+    user_field = next((lower_to_name[k] for k in ["username", "user", "j_username", "loginusername"] if k in lower_to_name), None)
+    pass_field = next((lower_to_name[k] for k in ["password", "pass", "j_password", "loginpassword"] if k in lower_to_name), None)
+    return action, hidden_fields, user_field or "username", pass_field or "password"
+
+
+def login_to_hmi():
+    login_url = urljoin(f"{HMI_BASE_URL}/", HMI_LOGIN_PATH.lstrip("/"))
+    login_page = hmi_session.get(login_url, timeout=HTTP_TIMEOUT_SECONDS)
+    login_page.raise_for_status()
+
+    action, hidden_fields, user_field, pass_field = _parse_login_form(login_page.text)
+    target_url = urljoin(login_url, action)
+    payload = {**hidden_fields, user_field: HMI_USERNAME, pass_field: HMI_PASSWORD}
+
+    response = hmi_session.post(target_url, data=payload, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
+    response.raise_for_status()
+    return "login.htm" not in response.url.lower()
+
+
 def fetch_hmi_status():
     for url in HMI_STATUS_URLS:
         try:
-            response = requests.get(url, timeout=HTTP_TIMEOUT_SECONDS)
+            with session_lock:
+                response = hmi_session.get(url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
+                if "login.htm" in response.url.lower():
+                    if not login_to_hmi():
+                        continue
+                    response = hmi_session.get(url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict):
-                return sanitize_status(payload), url
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "application/json" in content_type:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return sanitize_status(payload), url
+            parsed = extract_status_from_text(response.text)
+            if parsed:
+                return parsed, url
         except (requests.RequestException, ValueError):
             continue
     return None, None

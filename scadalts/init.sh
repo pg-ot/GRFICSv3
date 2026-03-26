@@ -51,5 +51,6 @@ else
 fi
 
 ip route add 192.168.95.0/24 via 192.168.90.200 || true
+ip route replace 192.168.100.0/24 via 192.168.90.200 || true
 
 exit 0

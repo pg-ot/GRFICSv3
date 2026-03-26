@@ -11,7 +11,8 @@ ENV SCADA_LTS_VERSION=2.7.8.1 \
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get install -y wget unzip supervisor mariadb-server libjaxb-api-java libjaxb-java libactivation-java && \
+    apt-get install -y wget unzip supervisor mariadb-server libjaxb-api-java libjaxb-java libactivation-java \
+    iproute2 iputils-ping net-tools curl && \
     rm -rf /var/lib/apt/lists/*
 
 

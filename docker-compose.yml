@@ -164,7 +164,7 @@ networks:
   b-ics-net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # Replace with your actual host NIC
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
     ipam:
       config:
         - subnet: 192.168.95.0/24
@@ -173,7 +173,7 @@ networks:
   c-dmz-net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # Replace with your actual host NIC
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
     ipam:
       config:
         - subnet: 192.168.90.0/24
@@ -183,7 +183,7 @@ networks:
   d-l4-net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # Replace with your actual host NIC
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
     ipam:
       config:
         - subnet: 192.168.100.0/24

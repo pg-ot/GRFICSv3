@@ -25,6 +25,11 @@ HMI_BASE_URL = os.getenv("HMI_BASE_URL", "http://192.168.90.107:8080").rstrip("/
 HMI_LOGIN_PATH = os.getenv("HMI_LOGIN_PATH", "/login.htm")
 HMI_USERNAME = os.getenv("HMI_USERNAME", "admin")
 HMI_PASSWORD = os.getenv("HMI_PASSWORD", "admin")
+HMI_AUTH_STATUS_URLS = [
+    url.strip()
+    for url in os.getenv("HMI_AUTH_STATUS_URLS", "/view_edit.shtm,/watch_list.shtm,/").split(",")
+    if url.strip()
+]
 POLL_INTERVAL_SECONDS = int(os.getenv("HMI_POLL_INTERVAL_SECONDS", "10"))
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HMI_HTTP_TIMEOUT_SECONDS", "3"))
 
@@ -72,11 +77,11 @@ def sanitize_status(raw_status):
 def extract_status_from_text(text):
     # Best-effort adapter for non-JSON authenticated pages.
     patterns = {
-        "plant_status": r"(?:plant[_\\s-]*status|status)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
-        "tank_level": r"(?:tank[_\\s-]*level)\\s*[:=]\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?",
-        "pump_state": r"(?:pump[_\\s-]*state)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
-        "valve_state": r"(?:valve[_\\s-]*state)\\s*[:=]\\s*\"?([A-Za-z_ -]+)\"?",
-        "alarm_count": r"(?:alarm[_\\s-]*count|alarms?)\\s*[:=]\\s*\"?([0-9]+)\"?",
+        "plant_status": r"(?:plant[_\s-]*status|status)\s*[:=]\s*\"?([A-Za-z_ -]+)\"?",
+        "tank_level": r"(?:tank[_\s-]*level)\s*[:=]\s*\"?([0-9]+(?:\.[0-9]+)?)\"?",
+        "pump_state": r"(?:pump[_\s-]*state)\s*[:=]\s*\"?([A-Za-z_ -]+)\"?",
+        "valve_state": r"(?:valve[_\s-]*state)\s*[:=]\s*\"?([A-Za-z_ -]+)\"?",
+        "alarm_count": r"(?:alarm[_\s-]*count|alarms?)\s*[:=]\s*\"?([0-9]+)\"?",
     }
     extracted = {}
     for key, pattern in patterns.items():
@@ -107,6 +112,14 @@ def _parse_login_form(login_html):
     return action, hidden_fields, user_field or "username", pass_field or "password"
 
 
+def _is_login_page(response):
+    lower_text = response.text.lower()
+    return (
+        "login.htm" in response.url.lower()
+        or ('name="username"' in lower_text and 'name="password"' in lower_text and "<form" in lower_text)
+    )
+
+
 def login_to_hmi():
     login_url = urljoin(f"{HMI_BASE_URL}/", HMI_LOGIN_PATH.lstrip("/"))
     login_page = hmi_session.get(login_url, timeout=HTTP_TIMEOUT_SECONDS)
@@ -118,27 +131,39 @@ def login_to_hmi():
 
     response = hmi_session.post(target_url, data=payload, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
     response.raise_for_status()
-    return "login.htm" not in response.url.lower()
+    return not _is_login_page(response)
+
+
+def _candidate_status_urls():
+    urls = list(HMI_STATUS_URLS)
+    for path in HMI_AUTH_STATUS_URLS:
+        urls.append(urljoin(f"{HMI_BASE_URL}/", path.lstrip("/")))
+    return urls
 
 
 def fetch_hmi_status():
-    for url in HMI_STATUS_URLS:
+    for url in _candidate_status_urls():
         try:
             with session_lock:
                 response = hmi_session.get(url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
-                if "login.htm" in response.url.lower():
+                if _is_login_page(response):
                     if not login_to_hmi():
                         continue
                     response = hmi_session.get(url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             response.raise_for_status()
+            if _is_login_page(response):
+                continue
             content_type = response.headers.get("Content-Type", "").lower()
             if "application/json" in content_type:
                 payload = response.json()
                 if isinstance(payload, dict):
-                    return sanitize_status(payload), url
+                    status = sanitize_status(payload)
+                    status["source"] = "hmi-authenticated"
+                    return status, "hmi-authenticated"
             parsed = extract_status_from_text(response.text)
             if parsed:
-                return parsed, url
+                parsed["source"] = "hmi-authenticated"
+                return parsed, "hmi-authenticated"
         except (requests.RequestException, ValueError):
             continue
     return None, None

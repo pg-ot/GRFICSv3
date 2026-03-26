@@ -113,6 +113,7 @@ services:
       - HMI_BASE_URL=http://192.168.90.107:8080
       - HMI_LOGIN_PATH=/login.htm
       - HMI_STATUS_URLS=http://192.168.90.107:8080/api/status,http://192.168.90.107:8080/status
+      - HMI_AUTH_STATUS_URLS=/view_edit.shtm,/watch_list.shtm,/
       - HMI_POLL_INTERVAL_SECONDS=10
       - HMI_USERNAME=admin
       - HMI_PASSWORD=admin

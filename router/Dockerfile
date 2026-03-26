@@ -3,7 +3,7 @@ FROM debian:12-slim
 # Install required tools
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    iproute2 iputils-ping iptables nano procps tcpdump curl \
+    iproute2 iputils-ping net-tools iptables nano procps tcpdump curl \
     python3 python3-flask ulogd2 ulogd2-json && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \ 

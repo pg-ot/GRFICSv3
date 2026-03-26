@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template
 
 app = Flask(__name__)
@@ -30,6 +31,7 @@ HMI_AUTH_STATUS_URLS = [
     for url in os.getenv("HMI_AUTH_STATUS_URLS", "/view_edit.shtm,/watch_list.shtm,/").split(",")
     if url.strip()
 ]
+HMI_WATCHLIST_PATH = os.getenv("HMI_WATCHLIST_PATH", "/watch_list.shtm")
 POLL_INTERVAL_SECONDS = int(os.getenv("HMI_POLL_INTERVAL_SECONDS", "10"))
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HMI_HTTP_TIMEOUT_SECONDS", "3"))
 
@@ -141,7 +143,95 @@ def _candidate_status_urls():
     return urls
 
 
+def _to_float_or_none(value):
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_watchlist_html(html):
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find(id="watchListTable")
+    if table is None:
+        return None
+
+    points = {}
+    for name_td in table.select('td[id$="Name"]'):
+        td_id = name_td.get("id", "")
+        value_id = td_id.replace("Name", "Value")
+        value_td = table.find("td", id=value_id)
+        if not value_td:
+            continue
+        name = name_td.get_text(" ", strip=True)
+        value = value_td.get_text(" ", strip=True)
+        if name:
+            points[name] = value
+
+    if not points:
+        return None
+
+    level = _to_float_or_none(points.get("TenEast - Level"))
+    run_value = points.get("TenEast - Run")
+    pump_state = str(run_value) if run_value is not None else "UNKNOWN"
+
+    preferred_valves = [
+        "TenEast - ProductValve",
+        "TenEast - AValve",
+        "TenEast - BValve",
+        "TenEast - PurgeValve",
+    ]
+    valve_state = None
+    for valve_name in preferred_valves:
+        if valve_name in points:
+            valve_state = points[valve_name]
+            break
+    if valve_state is None:
+        first_valve = next((v for k, v in points.items() if "valve" in k.lower()), None)
+        valve_state = first_valve if first_valve is not None else "UNKNOWN"
+
+    header_text = soup.get_text(" ", strip=True)
+    status_keywords = ["critical", "urgent", "warning", "information", "normal", "ok"]
+    plant_status = "UNKNOWN"
+    for keyword in status_keywords:
+        if keyword in header_text.lower():
+            plant_status = keyword.upper()
+            break
+
+    alarm_count = 0
+    alarm_match = re.search(r"alarm(?:s)?\s*[:=]\s*(\d+)", header_text, flags=re.IGNORECASE)
+    if alarm_match:
+        alarm_count = _coerce_int(alarm_match.group(1), 0)
+
+    parsed = {
+        "plant_status": plant_status,
+        "tank_level": level if level is not None else 0.0,
+        "pump_state": pump_state,
+        "valve_state": str(valve_state),
+        "alarm_count": alarm_count,
+        "last_update": datetime.now(timezone.utc).isoformat(),
+        "source": "hmi-watchlist",
+    }
+    return parsed
+
+
 def fetch_hmi_status():
+    watchlist_url = urljoin(f"{HMI_BASE_URL}/", HMI_WATCHLIST_PATH.lstrip("/"))
+    with session_lock:
+        try:
+            initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
+            if _is_login_page(initial):
+                if not login_to_hmi():
+                    return None, None
+                initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
+            initial.raise_for_status()
+            if not _is_login_page(initial):
+                parsed_watchlist = parse_watchlist_html(initial.text)
+                if parsed_watchlist:
+                    return parsed_watchlist, "hmi-watchlist"
+        except requests.RequestException:
+            pass
+
     for url in _candidate_status_urls():
         try:
             with session_lock:

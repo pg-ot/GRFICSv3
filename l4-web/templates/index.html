@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Enterprise Operations Portal</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 2rem auto; line-height: 1.4; }
+    h1 { margin-bottom: 0.2rem; }
+    .muted { color: #555; margin-top: 0; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; background: #fafafa; }
+    dt { font-weight: bold; }
+    dd { margin: 0 0 0.6rem 0; }
+    footer { margin-top: 2rem; color: #666; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Enterprise Operations Portal</h1>
+  <p class="muted">Simulated Level 4 / Enterprise entry point for the GRFICSv3 demo lab.</p>
+
+  <div class="card">
+    <h2>Read-only Process Summary</h2>
+    <dl>
+      <dt>Plant Status</dt><dd id="plant_status">-</dd>
+      <dt>Tank Level</dt><dd id="tank_level">-</dd>
+      <dt>Pump State</dt><dd id="pump_state">-</dd>
+      <dt>Valve State</dt><dd id="valve_state">-</dd>
+      <dt>Alarm Count</dt><dd id="alarm_count">-</dd>
+      <dt>Last Update</dt><dd id="last_update">-</dd>
+      <dt>Data Source</dt><dd id="source">-</dd>
+    </dl>
+  </div>
+
+  <footer>For isolated training and research use only.</footer>
+
+  <script>
+    async function refreshStatus() {
+      try {
+        const response = await fetch('/api/status', { cache: 'no-store' });
+        const status = await response.json();
+        document.getElementById('plant_status').textContent = status.plant_status;
+        document.getElementById('tank_level').textContent = status.tank_level;
+        document.getElementById('pump_state').textContent = status.pump_state;
+        document.getElementById('valve_state').textContent = status.valve_state;
+        document.getElementById('alarm_count').textContent = status.alarm_count;
+        document.getElementById('last_update').textContent = status.last_update;
+        document.getElementById('source').textContent = status.source;
+      } catch (err) {
+        document.getElementById('source').textContent = 'unavailable';
+      }
+    }
+
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>

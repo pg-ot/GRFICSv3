@@ -32,8 +32,6 @@ HMI_AUTH_STATUS_URLS = [
     if url.strip()
 ]
 HMI_WATCHLIST_PATH = os.getenv("HMI_WATCHLIST_PATH", "/watch_list.shtm")
-HMI_DWR_INTERFACE_PATH = os.getenv("HMI_DWR_INTERFACE_PATH", "/dwr/interface/WatchListDwr.js")
-HMI_DWR_PLAINCALL_BASE = os.getenv("HMI_DWR_PLAINCALL_BASE", "/dwr/call/plaincall/WatchListDwr")
 POLL_INTERVAL_SECONDS = int(os.getenv("HMI_POLL_INTERVAL_SECONDS", "10"))
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HMI_HTTP_TIMEOUT_SECONDS", "3"))
 
@@ -49,7 +47,6 @@ status_cache = {
 cache_lock = threading.Lock()
 session_lock = threading.Lock()
 hmi_session = requests.Session()
-dwr_batch_id = 0
 
 
 def _coerce_float(value, default=0.0):
@@ -119,20 +116,9 @@ def _parse_login_form(login_html):
 
 def _is_login_page(response):
     lower_text = response.text.lower()
-    has_login_form = (
-        'name="username"' in lower_text
-        and 'name="password"' in lower_text
-        and "<form" in lower_text
-    )
-    # Important: Scada-LTS can remain on /login.htm after successful POST
-    # while already authenticated. So detect login state by form presence,
-    # not URL alone.
     return (
-        has_login_form
-        or (
-            response.status_code in (301, 302, 303, 307, 308)
-            and "login.htm" in response.headers.get("Location", "").lower()
-        )
+        "login.htm" in response.url.lower()
+        or ('name="username"' in lower_text and 'name="password"' in lower_text and "<form" in lower_text)
     )
 
 
@@ -157,98 +143,6 @@ def _candidate_status_urls():
     return urls
 
 
-def _extract_script_session_id(html):
-    patterns = [
-        r"scriptSessionId=([A-Za-z0-9+/=_-]+)",
-        r"_scriptSessionId\s*=\s*['\"]([^'\"]+)['\"]",
-        r"_origScriptSessionId\s*=\s*['\"]([^'\"]+)['\"]",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, html)
-        if m:
-            return m.group(1)
-    return "0"
-
-
-def _dwr_call(method_name, args, page_path, script_session_id):
-    global dwr_batch_id
-    dwr_batch_id += 1
-    body_lines = [
-        "callCount=1",
-        f"page={page_path}",
-        "httpSessionId=",
-        f"scriptSessionId={script_session_id}",
-        f"batchId={dwr_batch_id}",
-        "instanceId=0",
-        "c0-scriptName=WatchListDwr",
-        f"c0-methodName={method_name}",
-        "c0-id=0",
-    ]
-    for idx, arg in enumerate(args):
-        if isinstance(arg, bool):
-            val = "true" if arg else "false"
-        elif arg is None:
-            val = "null"
-        elif isinstance(arg, (int, float)):
-            val = str(arg)
-        else:
-            val = f'"{arg}"'
-        body_lines.append(f"c0-param{idx}={val}")
-
-    plaincall_path = f"{HMI_DWR_PLAINCALL_BASE}.{method_name}.dwr"
-    response = hmi_session.post(
-        urljoin(f"{HMI_BASE_URL}/", plaincall_path.lstrip("/")),
-        data="\n".join(body_lines),
-        headers={"Content-Type": "text/plain"},
-        timeout=HTTP_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    return response.text
-
-
-def _parse_point_map_from_dwr_text(text):
-    # Parse common DWR payload shapes containing watch-list point names/values.
-    # Example target names:
-    #   TenEast - Level, TenEast - Run, TenEast - ProductValve
-    points = {}
-    pair_patterns = [
-        r'"name"\s*:\s*"([^"]+)"[^}]*?"value"\s*:\s*"([^"]*)"',
-        r'"name"\s*:\s*"([^"]+)"[^}]*?"pointValue"\s*:\s*{[^}]*?"value"\s*:\s*"([^"]*)"',
-        r"([A-Za-z0-9 _-]+)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?|OPEN|CLOSED|ON|OFF|TRUE|FALSE)",
-    ]
-    for pattern in pair_patterns:
-        for name, value in re.findall(pattern, text, flags=re.IGNORECASE):
-            n = _normalize_space(name)
-            if "teneast" in n.lower():
-                points[n] = _normalize_space(value)
-    return points
-
-
-def fetch_points_via_dwr(watchlist_html):
-    interface_url = urljoin(f"{HMI_BASE_URL}/", HMI_DWR_INTERFACE_PATH.lstrip("/"))
-    interface_js = hmi_session.get(interface_url, timeout=HTTP_TIMEOUT_SECONDS).text
-    methods = re.findall(r"WatchListDwr\.([A-Za-z0-9_]+)\s*=\s*function\(([^)]*)\)", interface_js)
-    method_map = {name: [a for a in args.split(",") if a.strip()] for name, args in methods}
-    script_session_id = _extract_script_session_id(watchlist_html)
-
-    candidates = ["getPointData", "generateContent", "initialize", "init"]
-    for method in candidates:
-        if method not in method_map:
-            continue
-        argc = len(method_map[method])
-        # Try a few benign read-only arg sets.
-        arg_sets = [[None] * argc, [0] * argc, [""] * argc]
-        for args in arg_sets:
-            try:
-                payload = _dwr_call(method, args, HMI_WATCHLIST_PATH, script_session_id)
-                points = _parse_point_map_from_dwr_text(payload)
-                if points:
-                    return points
-            except requests.RequestException:
-                continue
-    return {}
-
-
 def _to_float_or_none(value):
     try:
         return float(str(value).strip())
@@ -256,15 +150,10 @@ def _to_float_or_none(value):
         return None
 
 
-def _normalize_space(value):
-    return " ".join(str(value).replace("\xa0", " ").split())
-
-
 def parse_watchlist_html(html):
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find(id="watchListTable")
     if table is None:
-        app.logger.warning("watchListTable not found in authenticated watch list HTML")
         return None
 
     points = {}
@@ -274,30 +163,16 @@ def parse_watchlist_html(html):
         value_td = table.find("td", id=value_id)
         if not value_td:
             continue
-        name = _normalize_space(name_td.get_text(" ", strip=True))
-        value = _normalize_space(value_td.get_text(" ", strip=True))
+        name = name_td.get_text(" ", strip=True)
+        value = value_td.get_text(" ", strip=True)
         if name:
             points[name] = value
 
     if not points:
-        app.logger.warning("No direct point rows in watchListTable; trying DWR point fetch")
-        points = fetch_points_via_dwr(html)
-        if not points:
-            return None
-
-    def _find_point(exact_names, contains_terms):
-        for key in exact_names:
-            if key in points:
-                return points[key]
-        for name, value in points.items():
-            lowered = name.lower()
-            if all(term in lowered for term in contains_terms):
-                return value
         return None
 
-    level_raw = _find_point(["TenEast - Level"], ["level"])
-    level = _to_float_or_none(level_raw)
-    run_value = _find_point(["TenEast - Run"], ["run"])
+    level = _to_float_or_none(points.get("TenEast - Level"))
+    run_value = points.get("TenEast - Run")
     pump_state = str(run_value) if run_value is not None else "UNKNOWN"
 
     preferred_valves = [
@@ -306,9 +181,14 @@ def parse_watchlist_html(html):
         "TenEast - BValve",
         "TenEast - PurgeValve",
     ]
-    valve_state = _find_point(preferred_valves, ["valve"])
+    valve_state = None
+    for valve_name in preferred_valves:
+        if valve_name in points:
+            valve_state = points[valve_name]
+            break
     if valve_state is None:
-        valve_state = "UNKNOWN"
+        first_valve = next((v for k, v in points.items() if "valve" in k.lower()), None)
+        valve_state = first_valve if first_valve is not None else "UNKNOWN"
 
     header_text = soup.get_text(" ", strip=True)
     status_keywords = ["critical", "urgent", "warning", "information", "normal", "ok"]
@@ -322,10 +202,6 @@ def parse_watchlist_html(html):
     alarm_match = re.search(r"alarm(?:s)?\s*[:=]\s*(\d+)", header_text, flags=re.IGNORECASE)
     if alarm_match:
         alarm_count = _coerce_int(alarm_match.group(1), 0)
-
-    if level is None and run_value is None and valve_state == "UNKNOWN":
-        app.logger.warning("Watch-list parsed but key points were missing; using fallback")
-        return None
 
     parsed = {
         "plant_status": plant_status,
@@ -346,7 +222,6 @@ def fetch_hmi_status():
             initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             if _is_login_page(initial):
                 if not login_to_hmi():
-                    app.logger.warning("HMI login failed; watch-list fetch cannot proceed")
                     return None, None
                 initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             initial.raise_for_status()
@@ -354,9 +229,8 @@ def fetch_hmi_status():
                 parsed_watchlist = parse_watchlist_html(initial.text)
                 if parsed_watchlist:
                     return parsed_watchlist, "hmi-watchlist"
-                app.logger.warning("Authenticated watch-list fetch succeeded but parsing returned no values")
         except requests.RequestException:
-            app.logger.exception("Error requesting authenticated watch-list page")
+            pass
 
     for url in _candidate_status_urls():
         try:

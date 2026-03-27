@@ -116,20 +116,9 @@ def _parse_login_form(login_html):
 
 def _is_login_page(response):
     lower_text = response.text.lower()
-    has_login_form = (
-        'name="username"' in lower_text
-        and 'name="password"' in lower_text
-        and "<form" in lower_text
-    )
-    # Important: Scada-LTS can remain on /login.htm after successful POST
-    # while already authenticated. So detect login state by form presence,
-    # not URL alone.
     return (
-        has_login_form
-        or (
-            response.status_code in (301, 302, 303, 307, 308)
-            and "login.htm" in response.headers.get("Location", "").lower()
-        )
+        "login.htm" in response.url.lower()
+        or ('name="username"' in lower_text and 'name="password"' in lower_text and "<form" in lower_text)
     )
 
 
@@ -161,15 +150,10 @@ def _to_float_or_none(value):
         return None
 
 
-def _normalize_space(value):
-    return " ".join(str(value).replace("\xa0", " ").split())
-
-
 def parse_watchlist_html(html):
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find(id="watchListTable")
     if table is None:
-        app.logger.warning("watchListTable not found in authenticated watch list HTML")
         return None
 
     points = {}
@@ -179,28 +163,16 @@ def parse_watchlist_html(html):
         value_td = table.find("td", id=value_id)
         if not value_td:
             continue
-        name = _normalize_space(name_td.get_text(" ", strip=True))
-        value = _normalize_space(value_td.get_text(" ", strip=True))
+        name = name_td.get_text(" ", strip=True)
+        value = value_td.get_text(" ", strip=True)
         if name:
             points[name] = value
 
     if not points:
-        app.logger.warning("No point name/value rows parsed from watchListTable")
         return None
 
-    def _find_point(exact_names, contains_terms):
-        for key in exact_names:
-            if key in points:
-                return points[key]
-        for name, value in points.items():
-            lowered = name.lower()
-            if all(term in lowered for term in contains_terms):
-                return value
-        return None
-
-    level_raw = _find_point(["TenEast - Level"], ["level"])
-    level = _to_float_or_none(level_raw)
-    run_value = _find_point(["TenEast - Run"], ["run"])
+    level = _to_float_or_none(points.get("TenEast - Level"))
+    run_value = points.get("TenEast - Run")
     pump_state = str(run_value) if run_value is not None else "UNKNOWN"
 
     preferred_valves = [
@@ -209,9 +181,14 @@ def parse_watchlist_html(html):
         "TenEast - BValve",
         "TenEast - PurgeValve",
     ]
-    valve_state = _find_point(preferred_valves, ["valve"])
+    valve_state = None
+    for valve_name in preferred_valves:
+        if valve_name in points:
+            valve_state = points[valve_name]
+            break
     if valve_state is None:
-        valve_state = "UNKNOWN"
+        first_valve = next((v for k, v in points.items() if "valve" in k.lower()), None)
+        valve_state = first_valve if first_valve is not None else "UNKNOWN"
 
     header_text = soup.get_text(" ", strip=True)
     status_keywords = ["critical", "urgent", "warning", "information", "normal", "ok"]
@@ -225,10 +202,6 @@ def parse_watchlist_html(html):
     alarm_match = re.search(r"alarm(?:s)?\s*[:=]\s*(\d+)", header_text, flags=re.IGNORECASE)
     if alarm_match:
         alarm_count = _coerce_int(alarm_match.group(1), 0)
-
-    if level is None and run_value is None and valve_state == "UNKNOWN":
-        app.logger.warning("Watch-list parsed but key points were missing; using fallback")
-        return None
 
     parsed = {
         "plant_status": plant_status,
@@ -249,7 +222,6 @@ def fetch_hmi_status():
             initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             if _is_login_page(initial):
                 if not login_to_hmi():
-                    app.logger.warning("HMI login failed; watch-list fetch cannot proceed")
                     return None, None
                 initial = hmi_session.get(watchlist_url, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True)
             initial.raise_for_status()
@@ -257,9 +229,8 @@ def fetch_hmi_status():
                 parsed_watchlist = parse_watchlist_html(initial.text)
                 if parsed_watchlist:
                     return parsed_watchlist, "hmi-watchlist"
-                app.logger.warning("Authenticated watch-list fetch succeeded but parsing returned no values")
         except requests.RequestException:
-            app.logger.exception("Error requesting authenticated watch-list page")
+            pass
 
     for url in _candidate_status_urls():
         try:

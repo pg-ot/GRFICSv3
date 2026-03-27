@@ -97,6 +97,34 @@ services:
       net.ipv4.conf.default.arp_announce: 2
       net.ipv4.conf.all.arp_announce: 2
 
+  # Simulated Level 4 / enterprise entry point
+  l4-web:
+    image: fortiphyd/grfics-l4-web
+    container_name: l4-web
+    hostname: l4-web
+    build: ./l4-web
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8085:80"
+    environment:
+      # Read-only polling against HMI-side HTTP status endpoints.
+      - HMI_BASE_URL=http://192.168.90.107:8080
+      - HMI_LOGIN_PATH=/login.htm
+      - HMI_WATCHLIST_PATH=/watch_list.shtm
+      - HMI_STATUS_URLS=http://192.168.90.107:8080/api/status,http://192.168.90.107:8080/status
+      - HMI_AUTH_STATUS_URLS=/view_edit.shtm,/watch_list.shtm,/
+      - HMI_POLL_INTERVAL_SECONDS=10
+      - HMI_USERNAME=admin
+      - HMI_PASSWORD=admin
+    depends_on:
+      - hmi
+    networks:
+      a-grfics-admin:
+      d-l4-net:
+        ipv4_address: 192.168.100.10
+
   router:
     image: fortiphyd/grfics-router
     container_name: router
@@ -122,6 +150,8 @@ services:
         ipv4_address: 192.168.95.200
       c-dmz-net:
         ipv4_address: 192.168.90.200
+      d-l4-net:
+        ipv4_address: 192.168.100.200
 
   caldera:
     image: fortiphyd/grfics-caldera
@@ -140,7 +170,7 @@ networks:
   b-ics-net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # Replace with your actual host NIC
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
     ipam:
       config:
         - subnet: 192.168.95.0/24
@@ -149,12 +179,21 @@ networks:
   c-dmz-net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # Replace with your actual host NIC
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
     ipam:
       config:
         - subnet: 192.168.90.0/24
           gateway: 192.168.90.1
 
+  # Level 4 / enterprise subnet for WAN-side demo access
+  d-l4-net:
+    driver: macvlan
+    driver_opts:
+      parent: ${GRFICS_PARENT_IFACE:-eth0}  # Set in .env if host NIC is not eth0 (e.g., ens4 on GCE)
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+          gateway: 192.168.100.1
 
   a-grfics-admin:
     driver: bridge
